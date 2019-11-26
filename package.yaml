@@ -1,14 +1,14 @@
 name: create-scheme
 version: 0.1.0.0
-github: "githubuser/create-scheme"
+github: 'githubuser/create-scheme'
 license: BSD3
-author: "Author name here"
-maintainer: "example@example.com"
-copyright: "2019 Author name here"
+author: 'Author name here'
+maintainer: 'example@example.com'
+copyright: '2019 Author name here'
 
 extra-source-files:
-    - README.md
-    - ChangeLog.md
+  - README.md
+  - ChangeLog.md
 
 # Metadata used when publishing your package
 # synopsis:            Short description of your package
@@ -20,32 +20,33 @@ extra-source-files:
 description: Please see the README on GitHub at <https://github.com/githubuser/create-scheme#readme>
 
 dependencies:
-    - base >= 4.7 && < 5
-    - text
-    - parsec
-    - array
+  - base >= 4.7 && < 5
+  - text
+  - parsec
+  - array
+  - mtl
 
 library:
-    source-dirs: src
+  source-dirs: src
 
 executables:
-    create-scheme-exe:
-        main: Main.hs
-        source-dirs: app
-        ghc-options:
-            - -threaded
-            - -rtsopts
-            - -with-rtsopts=-N
-        dependencies:
-            - create-scheme
+  create-scheme-exe:
+    main: Main.hs
+    source-dirs: app
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
+    dependencies:
+      - create-scheme
 
 tests:
-    create-scheme-test:
-        main: Spec.hs
-        source-dirs: test
-        ghc-options:
-            - -threaded
-            - -rtsopts
-            - -with-rtsopts=-N
-        dependencies:
-            - create-scheme
+  create-scheme-test:
+    main: Spec.hs
+    source-dirs: test
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
+    dependencies:
+      - create-scheme

@@ -1,12 +1,14 @@
 module Parser where
 
-import           Numeric
-import           Lib
-import           System.Environment
-import           Data.Char
-import           Data.Ratio
-import           Data.Complex
+import           Control.Monad.Except
 import           Data.Array
+import           Data.Char
+import           Data.Complex
+import           Data.Ratio
+import           Lib
+import           Numeric
+import           System.Environment
+import           Text.Printf
 import           Text.ParserCombinators.Parsec
                                          hiding ( spaces )
 
@@ -22,6 +24,26 @@ data LispVal = Atom String
             | Complex (Complex Double)
             | Vector (Array Int LispVal)
 
+data LispError = NumArgs Integer [LispVal]
+                | TypeMismatch String LispVal
+                | Parser ParseError
+                | BadSpecialForm String LispVal
+                | NotFunction String String
+                | UnboundVar String String
+                | Default String
+
+instance Show LispError where
+  show = showError
+
+type ThrowsError = Either LispError
+
+trapError :: ThrowsError String -> ThrowsError String
+trapError action = catchError action (return . show)
+
+extractValue :: ThrowsError a -> a
+extractValue (Right val) = val
+
+
 instance Show LispVal where
   show = showVal
 
@@ -33,6 +55,20 @@ showVal (Bool   True         ) = "#t"
 showVal (Bool   False        ) = "#f"
 showVal (List   contents     ) = "(" ++ unwordsVal contents ++ ")"
 showVal (DottedList head tail) = "(" ++ unwordsVal head ++ showVal tail ++ ")"
+
+showError :: LispError -> String
+showError (UnboundVar     message  varname) = message ++ ": " ++ varname
+showError (BadSpecialForm message  form   ) = message ++ ": " ++ show form
+showError (NotFunction    message  func   ) = message ++ ": " ++ show func
+showError (NumArgs        expected found  ) = printf
+  "Expected %i args; found %i values %s"
+  expected
+  (length found)
+  (unwordsVal found)
+showError (TypeMismatch expected found) =
+  "Invalid type: expected " ++ expected ++ ", found " ++ show found
+showError (Parser parseErr) = "Parse error at " ++ show parseErr
+
 
 unwordsVal :: [LispVal] -> String
 unwordsVal = unwords . map showVal
@@ -210,10 +246,10 @@ parseExpr =
     <|> parseQuotes
     <|> parseLists
 
-readExpr :: String -> LispVal
+readExpr :: String -> ThrowsError LispVal
 readExpr input = case parse parseExpr "Lisp" input of
-  Left  err -> String $ "No match: " ++ show err
-  Right val -> val
+  Left  err -> throwError $ Parser err
+  Right val -> return val
 
 parseIt :: String -> Maybe LispVal
 parseIt s = case (parse parseExpr "lisp" s) of
