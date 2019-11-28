@@ -37,6 +37,8 @@ executables:
       - -threaded
       - -rtsopts
       - -with-rtsopts=-N
+    extensions:
+      - ExistentialQuantification
     dependencies:
       - create-scheme
 
@@ -48,5 +50,7 @@ tests:
       - -threaded
       - -rtsopts
       - -with-rtsopts=-N
+    extensions:
+      - ExistentialQuantification
     dependencies:
       - create-scheme
