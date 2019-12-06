@@ -4,9 +4,17 @@ module Eval where
 import           Parser                         ( LispVal(..)
                                                 , LispError(..)
                                                 , ThrowsError
+                                                , trapError
+                                                , extractValue
                                                 )
 import           Control.Monad.Except
 import           Text.ParserCombinators.Parsec
+import           Data.IORef
+import           Data.Maybe
+
+type Env = IORef [(String, IORef LispVal)]
+
+type IOThrowsError = ExceptT LispError IO
 
 data Unpacker = forall a. Eq a => AnyUnpacker (LispVal -> ThrowsError a)
 
@@ -19,6 +27,8 @@ unpackEquals a b (AnyUnpacker unpacker) =
     `catchError` const (return False)
 
 equal :: [LispVal] -> ThrowsError LispVal
+equal [DottedList xs x, DottedList ys y] =
+  equal [List (xs ++ [x]), List (ys ++ [y])]
 equal [List a, List b] = return $ Bool $ (length a == length b) && all
   eqvPair
   (zip a b)
@@ -33,16 +43,24 @@ equal [a, b] = do
   eqvEquals <- eqv [a, b]
   return $ Bool (primitiveEquals || let (Bool x) = eqvEquals in x)
 
-eval :: LispVal -> ThrowsError LispVal
-eval val@(String _                             ) = return val
-eval val@(Number _                             ) = return val
-eval val@(Bool   _                             ) = return val
-eval (    List   [Atom "quote", val           ]) = return val
-eval (    List   [Atom "list?", List _        ]) = return $ Bool True
-eval (    List   [Atom "list?", DottedList _ _]) = return $ Bool True
-eval (    List   [Atom "list?", _             ]) = return $ Bool False
-eval (    List   [Atom "if", pred, conseq, alt]) = evalCondition pred conseq alt
-eval (    List   (Atom f : args)               ) = mapM eval args >>= apply f
+eval :: Env -> LispVal -> IOThrowsError LispVal
+eval env val@(String _                               ) = return val
+eval env val@(Number _                               ) = return val
+eval env val@(Bool   _                               ) = return val
+eval env (    Atom   identifier                      ) = getVar env identifier
+eval env (    List   [Atom "quote", val           ]  ) = return val
+eval env (    List   [Atom "list?", List _        ]  ) = return $ Bool True
+eval env (    List   [Atom "list?", DottedList _ _]  ) = return $ Bool True
+eval env (    List   [Atom "list?", _             ]  ) = return $ Bool False
+eval env (    List   (Atom "cond"       : conditions)) = cond env conditions
+eval env (List (Atom "case" : key : clauses)) = evalCase env key clauses
+eval env (List [Atom "if", pred, conseq, alt]) =
+  evalCondition env pred conseq alt
+eval env (List [Atom "set!", Atom var, form]) =
+  eval env form >>= setVar env var
+eval env (List [Atom "define", Atom var, form]) =
+  eval env form >>= defineVar env var
+eval env (List (Atom f : args)) = mapM (eval env) args >>= liftThrows . apply f
 
 apply :: String -> [LispVal] -> ThrowsError LispVal
 apply f args = maybe
@@ -50,12 +68,12 @@ apply f args = maybe
   ($ args)
   (lookup f primitives)
 
-evalCondition :: LispVal -> LispVal -> LispVal -> ThrowsError LispVal
-evalCondition pred conseq alt = do
-  result <- eval pred
+evalCondition :: Env -> LispVal -> LispVal -> LispVal -> IOThrowsError LispVal
+evalCondition env pred conseq alt = do
+  result <- eval env pred
   case result of
-    Bool True  -> eval conseq
-    Bool False -> eval alt
+    Bool True  -> eval env conseq
+    Bool False -> eval env alt
     _          -> throwError $ TypeMismatch "bool" result
 
 primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
@@ -79,6 +97,8 @@ primitives =
   , ("string>=?"     , strBoolBinOp (>=))
   , ("string<?"      , strBoolBinOp (<))
   , ("string<=?"     , strBoolBinOp (<=))
+  , ("string-length" , stringLen)
+  , ("string-ref"    , stringRef)
   , ("car"           , car)
   , ("cdr"           , cdr)
   , ("cons"          , cons)
@@ -95,9 +115,9 @@ primitives =
 
 numericBinOp
   :: (Integer -> Integer -> Integer) -> [LispVal] -> ThrowsError LispVal
-numericBinOp f [] = throwError $ NumArgs 2 []
+numericBinOp f []            = throwError $ NumArgs 2 []
 numericBinOp f singleVal@[_] = throwError $ NumArgs 2 singleVal
-numericBinOp f params = mapM unpackNum params >>= return . Number . foldl1 f
+numericBinOp f params        = Number . foldl1 f <$> mapM unpackNum params
 
 unaryOp :: (LispVal -> LispVal) -> [LispVal] -> ThrowsError LispVal
 unaryOp _ []   = throwError $ NumArgs 1 []
@@ -137,7 +157,7 @@ boolBinOp
 boolBinOp unpacker op args = if length args /= 2
   then throwError $ NumArgs 2 args
   else do
-    left  <- unpacker $ args !! 0
+    left  <- unpacker $ head args
     right <- unpacker $ args !! 1
     return $ Bool (left `op` right)
 
@@ -197,3 +217,87 @@ eqv [List xs, List ys] = return $ Bool $ (length xs == length ys) && all
     Right (Bool val) -> val
 eqv [_, _]     = return $ Bool False
 eqv badArgList = throwError $ NumArgs 2 badArgList
+
+cond :: Env -> [LispVal] -> IOThrowsError LispVal
+cond env [List [Atom "else", value]     ] = eval env value
+cond env (List [condition, value] : alts) = do
+  result     <- eval env condition
+  boolResult <- liftThrows $ unpackBool result
+  if boolResult then eval env value else cond env alts
+cond env [List a] = throwError $ NumArgs 2 a
+cond env (a : _ ) = throwError $ NumArgs 2 [a]
+cond env _        = throwError $ Default "Not viable alternative in cond"
+
+evalCase :: Env -> LispVal -> [LispVal] -> IOThrowsError LispVal
+evalCase env _ [] =
+  throwError $ BadSpecialForm "no true clause in case expression: " (List [])
+evalCase env key clauses = case head clauses of
+  List (Atom "else" : exprs) -> last <$> mapM (eval env) exprs
+  List (List datums : exprs) -> do
+    result   <- eval env key
+    equality <- liftThrows $ mapM (\x -> eqv [x, result]) datums
+    if Bool True `elem` equality
+      then last <$> mapM (eval env) exprs
+      else evalCase env key (tail clauses)
+  _ -> throwError $ BadSpecialForm "ill-formed case expression" (List clauses)
+
+stringLen :: [LispVal] -> ThrowsError LispVal
+stringLen [String s ] = return $ Number $ fromIntegral $ length s
+stringLen [notString] = throwError $ TypeMismatch "not string" notString
+stringLen badArgList  = throwError $ NumArgs 1 badArgList
+
+stringRef :: [LispVal] -> ThrowsError LispVal
+stringRef [String s, Number k]
+  | length s < k' + 1 = throwError $ Default "Index out of bounds error"
+  | otherwise         = return $ String [s !! k']
+  where k' = fromIntegral k
+stringRef [String s, notNum] = throwError $ TypeMismatch "not a number" notNum
+stringRef [notString, _] = throwError $ TypeMismatch "not a string" notString
+stringRef badArgList = throwError $ NumArgs 2 badArgList
+
+nullEnv :: IO Env
+nullEnv = newIORef []
+
+liftThrows :: ThrowsError a -> IOThrowsError a
+liftThrows (Left  err) = throwError err
+liftThrows (Right val) = return val
+
+runIOThrows :: IOThrowsError String -> IO String
+runIOThrows action = extractValue <$> runExceptT (trapError action)
+
+isBound :: Env -> String -> IO Bool
+isBound envRef var = isJust . lookup var <$> readIORef envRef
+
+getVar :: Env -> String -> IOThrowsError LispVal
+getVar envRef var = do
+  env <- liftIO $ readIORef envRef
+  maybe (throwError $ UnboundVar "Getting an unbound variable" var)
+        (liftIO . readIORef)
+        (lookup var env)
+
+setVar :: Env -> String -> LispVal -> IOThrowsError LispVal
+setVar envRef var value = do
+  env <- liftIO $ readIORef envRef
+  maybe (throwError $ UnboundVar "Setting an unbound variable" var)
+        (liftIO . (`writeIORef` value))
+        (lookup var env)
+  return value
+
+defineVar :: Env -> String -> LispVal -> IOThrowsError LispVal
+defineVar envRef var value = do
+  alreadyDefined <- liftIO $ isBound envRef var
+  if alreadyDefined
+    then setVar envRef var value >> return value
+    else liftIO $ do
+      valueRef <- newIORef value
+      env      <- readIORef envRef
+      writeIORef envRef ((var, valueRef) : env)
+      return value
+
+bindVars :: Env -> [(String, LispVal)] -> IO Env
+bindVars envRef bindings = readIORef envRef >>= extendEnv bindings >>= newIORef
+ where
+  extendEnv bindings env = (++ env) <$> mapM addBinding bindings
+  addBinding (var, value) = do
+    ref <- newIORef value
+    return (var, ref)

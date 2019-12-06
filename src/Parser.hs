@@ -1,3 +1,6 @@
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE KindSignatures #-}
+
 module Parser where
 
 import           Control.Monad.Except
@@ -23,6 +26,7 @@ data LispVal = Atom String
             | Ratio Rational
             | Complex (Complex Double)
             | Vector (Array Int LispVal)
+            deriving (Eq)
 
 data LispError = NumArgs Integer [LispVal]
                 | TypeMismatch String LispVal
@@ -37,8 +41,9 @@ instance Show LispError where
 
 type ThrowsError = Either LispError
 
-trapError :: ThrowsError String -> ThrowsError String
-trapError action = catchError action (return . show)
+trapError
+  :: forall a (m :: * -> *) . (MonadError a m, Show a) => m String -> m String
+trapError action = action `catchError` (return . show)
 
 extractValue :: ThrowsError a -> a
 extractValue (Right val) = val
@@ -67,7 +72,8 @@ showError (NumArgs        expected found  ) = printf
   (unwordsVal found)
 showError (TypeMismatch expected found) =
   "Invalid type: expected " ++ expected ++ ", found " ++ show found
-showError (Parser parseErr) = "Parse error at " ++ show parseErr
+showError (Parser  parseErr) = "Parse error at " ++ show parseErr
+showError (Default s       ) = s
 
 
 unwordsVal :: [LispVal] -> String
@@ -252,6 +258,6 @@ readExpr input = case parse parseExpr "Lisp" input of
   Right val -> return val
 
 parseIt :: String -> Maybe LispVal
-parseIt s = case (parse parseExpr "lisp" s) of
+parseIt s = case parse parseExpr "lisp" s of
   Left  _ -> Nothing
   Right s -> Just s
