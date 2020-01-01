@@ -12,8 +12,11 @@ import           Lib
 import           Numeric
 import           System.Environment
 import           Text.Printf
+import           Data.IORef
 import           Text.ParserCombinators.Parsec
                                          hiding ( spaces )
+
+type Env = IORef [(String, IORef LispVal)]
 
 data LispVal = Atom String
             | List [LispVal]
@@ -26,7 +29,21 @@ data LispVal = Atom String
             | Ratio Rational
             | Complex (Complex Double)
             | Vector (Array Int LispVal)
-            deriving (Eq)
+            | PrimitiveFunc ([LispVal] -> ThrowsError LispVal)
+            | Func { params :: [String], vararg :: (Maybe String), body :: [LispVal], closure :: Env }
+
+instance Eq LispVal where
+  (Atom x         ) == (Atom y         ) = x == y
+  (List x         ) == (List y         ) = x == y
+  (DottedList x x') == (DottedList y y') = x == y && x' == y'
+  (Number    x    ) == (Number    y    ) = x == y
+  (String    x    ) == (String    y    ) = x == y
+  (Bool      x    ) == (Bool      y    ) = x == y
+  (Character x    ) == (Character y    ) = x == y
+  (Float     x    ) == (Float     y    ) = x == y
+  (Ratio     x    ) == (Ratio     y    ) = x == y
+  (Complex   x    ) == (Complex   y    ) = x == y
+  (Vector    x    ) == (Vector    y    ) = x == y
 
 data LispError = NumArgs Integer [LispVal]
                 | TypeMismatch String LispVal
@@ -42,7 +59,7 @@ instance Show LispError where
 type ThrowsError = Either LispError
 
 trapError
-  :: forall a (m :: * -> *) . (MonadError a m, Show a) => m String -> m String
+  :: forall  a (m :: * -> *) . (MonadError a m, Show a) => m String -> m String
 trapError action = action `catchError` (return . show)
 
 extractValue :: ThrowsError a -> a
@@ -60,6 +77,13 @@ showVal (Bool   True         ) = "#t"
 showVal (Bool   False        ) = "#f"
 showVal (List   contents     ) = "(" ++ unwordsVal contents ++ ")"
 showVal (DottedList head tail) = "(" ++ unwordsVal head ++ showVal tail ++ ")"
+showVal (PrimitiveFunc _) = "<primitive>"
+showVal (Func {params = args, vararg = varargs, body = body, closure = env}) =
+  "(lambda (" ++ unwords (map show args) ++
+    (case varargs of
+      Nothing -> ""
+      Just arg -> " . " ++ arg) ++ ") ...)"
+
 
 showError :: LispError -> String
 showError (UnboundVar     message  varname) = message ++ ": " ++ varname
