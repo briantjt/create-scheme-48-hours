@@ -5,6 +5,7 @@ import           Parser
 import           Control.Monad
 import           Eval
 import           System.IO
+import           LispTypes
 
 flushStr :: String -> IO ()
 flushStr str = putStr str >> hFlush stdout
@@ -30,13 +31,15 @@ runRepl =
     >>= until_ (== "quit") (readPrompt "Lisp>>> ")
     .   evalAndPrint
 
-runOne :: String -> IO ()
-runOne expr = primitiveBindings >>= flip evalAndPrint expr
+runOne :: [String] -> IO ()
+runOne args = do
+  env <- primitiveBindings
+    >>= flip bindVars [("args", List $ map String $ drop 1 args)]
+  (runIOThrows $ liftM show $ eval env (List [Atom "load", String (args !! 0)]))
+    >>= hPutStrLn stderr
+
 
 main :: IO ()
 main = do
   args <- getArgs
-  case length args of
-    0 -> runRepl
-    1 -> runOne $ head args
-    _ -> putStrLn "Program only takes 0 or 1 argument"
+  if null args then runRepl else runOne $ args
